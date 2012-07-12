@@ -548,27 +548,103 @@ call_cfunc(func, recv, len, argc, argv)
   return Qnil;		/* not reached */
 }
 
-VALUE my_rb_call0(klass, recv, id, oid, argc, argv, body, flags)
-    VALUE klass, recv;
-    ID    id;
-    ID    oid;
-    int argc;
-    VALUE *argv;
-    NODE * volatile body;
-    int flags;
+static NODE* setup_args(NODE* body, VALUE recv,
+                       int argc, VALUE* argv, VALUE* local_vars)
 {
-  NODE *b2;		/* OK */
+  NODE *node = 0;
+  int i, nopt = 0;
+
+  if (nd_type(body) == NODE_ARGS) {
+    node = body;
+    body = 0;
+  }
+  else if (nd_type(body) == NODE_BLOCK) {
+    node = body->nd_head;
+    body = body->nd_next;
+  }
+  if (node) {
+    if (nd_type(node) != NODE_ARGS) {
+      rb_bug("no argument-node");
+    }
+
+    i = node->nd_cnt;
+    if (i > argc) {
+      rb_raise(rb_eArgError, "wrong number of arguments (%d for %d)",
+          argc, i);
+    }
+    if (!node->nd_rest) {
+      NODE *optnode = node->nd_opt;
+
+      nopt = i;
+      while (optnode) {
+        nopt++;
+        optnode = optnode->nd_next;
+      }
+      if (nopt < argc) {
+        rb_raise(rb_eArgError,
+            "wrong number of arguments (%d for %d)",
+            argc, nopt);
+      }
+    }
+    if (local_vars) {
+      if (i > 0) {
+        /* +2 for $_ and $~ */
+        MEMCPY(local_vars+2, argv, VALUE, i);
+      }
+    }
+    argv += i; argc -= i;
+    if (node->nd_opt) {
+      NODE *opt = node->nd_opt;
+
+      while (opt && argc) {
+        mri_assign(recv, opt->nd_head, *argv, 1);
+        argv++; argc--;
+        ++i;
+        opt = opt->nd_next;
+      }
+      if (opt) {
+        mri_eval(recv, opt);
+        while (opt) {
+          opt = opt->nd_next;
+          ++i;
+        }
+      }
+    }
+    if (!node->nd_rest) {
+      i = nopt;
+    }
+    else {
+      VALUE v;
+
+      if (argc > 0) {
+        v = rb_ary_new4(argc,argv);
+        i = -i - 1;
+      }
+      else {
+        v = rb_ary_new2(0);
+      }
+      mri_assign(recv, node->nd_rest, v, 1);
+    }
+    ruby_frame->argc = i;
+  }
+
+  return body;
+}
+
+VALUE xl8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
+                 int argc, VALUE* argv, NODE* volatile body, int flags)
+{
   volatile VALUE result = Qnil;
   int itr;
-  TMP_PROTECT;
   volatile int safe = -1;
-
-  /* printf("in my_rb_call0\n"); */
+  NODE *b2;
+  TMP_PROTECT;
 
   if (NOEX_SAFE(flags) > ruby_safe_level && NOEX_SAFE(flags) > 2) {
     rb_raise(rb_eSecurityError, "calling insecure method: %s",
         rb_id2name(id));
   }
+
   switch (ruby_iter->iter) {
     case ITER_PRE:
     case ITER_PAS:
@@ -593,6 +669,7 @@ VALUE my_rb_call0(klass, recv, id, oid, argc, argv, body, flags)
     argc += RARRAY(tmp)->len;
     argv = nargv;
   }
+
   PUSH_ITER(itr);
   PUSH_FRAME();
 
@@ -612,6 +689,7 @@ VALUE my_rb_call0(klass, recv, id, oid, argc, argv, body, flags)
           rb_bug("bad argc (%d) specified for `%s(%s)'",
               len, rb_class2name(klass), rb_id2name(id));
         }
+
         if (event_hooks) {
           int state;
 
@@ -700,82 +778,8 @@ VALUE my_rb_call0(klass, recv, id, oid, argc, argv, body, flags)
         PUSH_VARS();
         PUSH_TAG(PROT_FUNC);
         if ((state = EXEC_TAG()) == 0) {
-          NODE *node = 0;
-          int i, nopt = 0;
+          body = setup_args(body, recv, argc, argv, local_vars);
 
-          if (nd_type(body) == NODE_ARGS) {
-            node = body;
-            body = 0;
-          }
-          else if (nd_type(body) == NODE_BLOCK) {
-            node = body->nd_head;
-            body = body->nd_next;
-          }
-          if (node) {
-            if (nd_type(node) != NODE_ARGS) {
-              rb_bug("no argument-node");
-            }
-
-            i = node->nd_cnt;
-            if (i > argc) {
-              rb_raise(rb_eArgError, "wrong number of arguments (%d for %d)",
-                  argc, i);
-            }
-            if (!node->nd_rest) {
-              NODE *optnode = node->nd_opt;
-
-              nopt = i;
-              while (optnode) {
-                nopt++;
-                optnode = optnode->nd_next;
-              }
-              if (nopt < argc) {
-                rb_raise(rb_eArgError,
-                    "wrong number of arguments (%d for %d)",
-                    argc, nopt);
-              }
-            }
-            if (local_vars) {
-              if (i > 0) {
-                /* +2 for $_ and $~ */
-                MEMCPY(local_vars+2, argv, VALUE, i);
-              }
-            }
-            argv += i; argc -= i;
-            if (node->nd_opt) {
-              NODE *opt = node->nd_opt;
-
-              while (opt && argc) {
-                mri_assign(recv, opt->nd_head, *argv, 1);
-                argv++; argc--;
-                ++i;
-                opt = opt->nd_next;
-              }
-              if (opt) {
-                mri_eval(recv, opt);
-                while (opt) {
-                  opt = opt->nd_next;
-                  ++i;
-                }
-              }
-            }
-            if (!node->nd_rest) {
-              i = nopt;
-            }
-            else {
-              VALUE v;
-
-              if (argc > 0) {
-                v = rb_ary_new4(argc,argv);
-                i = -i - 1;
-              }
-              else {
-                v = rb_ary_new2(0);
-              }
-              mri_assign(recv, node->nd_rest, v, 1);
-            }
-            ruby_frame->argc = i;
-          }
           if (event_hooks) {
             EXEC_EVENT_HOOK(RUBY_EVENT_CALL, b2, recv, id, klass);
           }
@@ -814,7 +818,7 @@ VALUE my_rb_call0(klass, recv, id, oid, argc, argv, body, flags)
       break;
 
     default:
-      unknown_node(body);
+      rb_bug("Unknown node used as method");
       break;
   }
   POP_FRAME();
@@ -869,7 +873,7 @@ void Init_xl8r_ext() {
   mri_eval = APPLY_OFFSET(addr, OFFSET_RB_EVAL);
   mri_assign = APPLY_OFFSET(addr, OFFSET_ASSIGN);
 
-  uintptr_t dest = ((uintptr_t)my_rb_call0) - (((uintptr_t)call0) + 6);
+  uintptr_t dest = ((uintptr_t)xl8r_call0) - (((uintptr_t)call0) + 6);
   uint8_t* buf = (uint8_t*)call0;
 
   mprotect((void*)(((uintptr_t)buf) & ~0xfff), 4096,
