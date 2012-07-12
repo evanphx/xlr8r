@@ -1,0 +1,8 @@
+.autotest
+History.txt
+Manifest.txt
+README.txt
+Rakefile
+bin/xl8r
+lib/xl8r.rb
+test/test_xl8r.rb
