@@ -753,30 +753,35 @@ VALUE xl8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
         NODE *saved_cref = 0;
 
         PUSH_SCOPE();
+
         if (body->nd_rval) {
           saved_cref = ruby_cref;
           ruby_cref = (NODE*)body->nd_rval;
         }
+
         PUSH_CLASS(ruby_cbase);
+
         if (body->nd_tbl) {
           local_vars = TMP_ALLOC(body->nd_tbl[0]+1);
           *local_vars++ = (VALUE)body;
           rb_mem_clear(local_vars, body->nd_tbl[0]);
           ruby_scope->local_tbl = body->nd_tbl;
           ruby_scope->local_vars = local_vars;
-        }
-        else {
+        } else {
           local_vars = ruby_scope->local_vars = 0;
           ruby_scope->local_tbl  = 0;
         }
+
         b2 = body = body->nd_next;
 
         if (NOEX_SAFE(flags) > ruby_safe_level) {
           safe = ruby_safe_level;
           ruby_safe_level = NOEX_SAFE(flags);
         }
+
         PUSH_VARS();
         PUSH_TAG(PROT_FUNC);
+
         if ((state = EXEC_TAG()) == 0) {
           body = setup_args(body, recv, argc, argv, local_vars);
 
@@ -784,20 +789,25 @@ VALUE xl8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
             EXEC_EVENT_HOOK(RUBY_EVENT_CALL, b2, recv, id, klass);
           }
           result = mri_eval(recv, body);
-        }
-        else if (state == TAG_RETURN && TAG_DST()) {
+        } else if (state == TAG_RETURN && TAG_DST()) {
           result = prot_tag->retval;
           state = 0;
         }
+
         POP_TAG();
+
         if (event_hooks) {
           EXEC_EVENT_HOOK(RUBY_EVENT_RETURN, ruby_current_node, recv, id, klass);
         }
+
         POP_VARS();
         POP_CLASS();
         POP_SCOPE();
+
         ruby_cref = saved_cref;
+
         if (safe >= 0) ruby_safe_level = safe;
+
         switch (state) {
           case 0:
             break;
@@ -821,6 +831,7 @@ VALUE xl8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
       rb_bug("Unknown node used as method");
       break;
   }
+
   POP_FRAME();
   POP_ITER();
   return result;
