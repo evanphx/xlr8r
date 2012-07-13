@@ -1020,7 +1020,7 @@ static VALUE generic_call(VALUE klass, VALUE recv, ID id, ID oid,
 typedef VALUE (*caller)(VALUE klass, VALUE recv, ID id, ID oid,
                  int argc, VALUE* argv, NODE* volatile body, int flags);
 
-VALUE xl8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
+VALUE xlr8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
                  int argc, VALUE* argv, NODE* volatile body, int flags)
 {
   volatile VALUE result = Qnil;
@@ -1181,7 +1181,7 @@ int diff = 0x6149;
 
 #define APPLY_OFFSET(base, offset) (void*)(((uintptr_t)base) - offset)
 
-void Init_xl8r_ext() {
+void Init_xlr8r_ext() {
   void* addr = dlsym(RTLD_DEFAULT, "rb_apply");
 
   void* call0 = APPLY_OFFSET(addr, OFFSET_CALL0);
@@ -1196,7 +1196,7 @@ void Init_xl8r_ext() {
   mri_eval = APPLY_OFFSET(addr, OFFSET_RB_EVAL);
   mri_assign = APPLY_OFFSET(addr, OFFSET_ASSIGN);
 
-  uintptr_t dest = ((uintptr_t)xl8r_call0) - (((uintptr_t)call0) + 6);
+  uintptr_t dest = ((uintptr_t)xlr8r_call0) - (((uintptr_t)call0) + 6);
   uint8_t* buf = (uint8_t*)call0;
 
   mprotect((void*)(((uintptr_t)buf) & ~0xfff), 4096,

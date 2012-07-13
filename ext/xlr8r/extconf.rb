@@ -57,4 +57,4 @@ File.open "config.h", "w" do |f|
   f.puts "#define OFFSET_ASSIGN #{as}"
 end
 
-create_makefile "xl8r_ext"
+create_makefile "xlr8r_ext"

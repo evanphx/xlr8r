@@ -1,4 +1,4 @@
-= xl8r
+= xlr8r
 
 * FIX (url)
 
