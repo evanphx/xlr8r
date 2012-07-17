@@ -55,6 +55,24 @@ File.open "config.h", "w" do |f|
   as = sym_apply - symbols["_assign"]
 
   f.puts "#define OFFSET_ASSIGN #{as}"
+
+  cl = sym_apply - symbols["_rb_call"]
+
+  f.puts "#define OFFSET_RB_CALL #{cl}"
+
+  rb = sym_apply - symbols["_ruby_block"]
+
+  f.puts "#define OFFSET_RUBY_BLOCK #{rb}"
+
+  bu = sym_apply - symbols["_block_unique"]
+
+  f.puts "#define OFFSET_BLOCK_UNIQUE #{bu}"
+
+  bf = sym_apply - symbols["_blk_free"]
+
+  f.puts "#define OFFSET_BLK_FREE #{bf}"
 end
+
+$CFLAGS.gsub!(/-O\d/,"-O0") if ENV['DEBUG']
 
 create_makefile "xlr8r_ext"

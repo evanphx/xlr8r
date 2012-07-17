@@ -8,6 +8,8 @@ def f; false; end
 def s; self; end
 def sym; :a; end
 
+def add(x); x + 1; end
+
 Benchmark.bm do |x|
   x.report("nil") do
     total.times { m }
@@ -27,5 +29,11 @@ Benchmark.bm do |x|
 
   x.report("symbol") do
     total.times { sym }
+  end
+end
+
+Benchmark.bm do |x|
+  x.report("add") do
+    total.times { add(1) }
   end
 end
