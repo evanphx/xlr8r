@@ -641,6 +641,16 @@ VALUE xlr8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
   NODE *b2;
   TMP_PROTECT;
 
+  if(last_ic) {
+    last_ic->klass = CLASS_OF(recv);
+    last_ic->origin = klass;
+    last_ic->body = body;
+    last_ic->noex = flags;
+    last_ic->id = oid;
+
+    last_ic = 0;
+  }
+
   if (NOEX_SAFE(flags) > ruby_safe_level && NOEX_SAFE(flags) > 2) {
     rb_raise(rb_eSecurityError, "calling insecure method: %s",
         rb_id2name(id));

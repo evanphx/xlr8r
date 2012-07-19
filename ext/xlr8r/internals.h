@@ -443,6 +443,19 @@ extern unsigned long *int_block_unique;
 #define ruby_block (*int_ruby_block)
 #define block_unique (*int_block_unique)
 
+struct InlineCache {
+  VALUE klass;
+  VALUE origin;
+  NODE* body;
+  ID id;
+  int noex;
+};
+
+extern struct InlineCache* last_ic;
+
+VALUE xlr8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
+                 int argc, VALUE* argv, NODE* volatile body, int flags);
+
 #ifdef cplusplus
 }
 #endif

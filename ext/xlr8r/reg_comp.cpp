@@ -25,7 +25,6 @@ enum Commands {
   kLoadNil,
   kGotoIfFalse,
   kGoto,
-  kCallZero,
   kCall,
   kPlus,
   kPrivateCall,
@@ -40,7 +39,8 @@ enum Commands {
   kSetArgs,
   kSetArgsFromCat,
   kCreateArray,
-  kCreateString
+  kCreateString,
+  kSetCache
 };
 
 typedef VALUE (*caller)(VALUE klass, VALUE recv, ID id, ID oid,
@@ -60,6 +60,9 @@ struct CompiledCode {
   int num_registers;
   uint8_t* bytecode;
 
+  int num_caches;
+  InlineCache* caches;
+
   struct custom_call caller_obj;
 };
 
@@ -72,8 +75,11 @@ static bool trace = false;
 #define TRACE3(str) if(trace) printf("=> " #str ", %d, %d, %d\n", bc[ip+1], bc[ip+2], bc[ip+3]);
 #define TRACE4(str) if(trace) printf("=> " #str ", %d, %d, %d, %d\n", bc[ip+1], bc[ip+2], bc[ip+3], bc[ip+4]);
 
+InlineCache* last_ic = 0;
+
 extern "C" VALUE (*mri_call)(VALUE klass, VALUE recv, ID mid,
                            int argc, const VALUE* argv, int scope, VALUE self);
+
 class RegisterInterpreter {
   CompiledCode* cc_;
 
@@ -279,8 +285,10 @@ public:
     VALUE tmp, tm2;
     VALUE *vals;
 
-    int next_args_len;
+    int next_args_len = 0;
     VALUE* next_args;
+
+    InlineCache* ic;
 
     VALUE* regs = (VALUE*)alloca(cc_->num_registers * sizeof(VALUE));
 
@@ -317,6 +325,15 @@ public:
         regs[bc[ip+1]] = Qfalse;
         ip += 2;
         break;
+
+      case kSetCache:
+        TRACE1(set_cache);
+
+        ic = cc_->caches + bc[ip+1];
+
+        ip += 2;
+        break;
+
       case kSetArgs:
         TRACE2(set_args);
 
@@ -344,30 +361,44 @@ public:
         if(FIXNUM_P(tmp) | FIXNUM_P(tm2)) {
           regs[bc[ip+1]] = add_fixnum(tmp, tm2);
         } else {
-          regs[bc[ip+1]] = mri_call(CLASS_OF(tmp), tmp,
-                                    id_plus, 1, &regs[bc[ip+3]], 0, self);
+          tm2 = CLASS_OF(tmp);
+
+          if(ic->klass == tm2) {
+            regs[bc[ip+1]] = xlr8r_call0(ic->origin, tmp,
+                                   id_plus, 
+                                   ic->id,
+                                   1, &regs[bc[ip+3]],
+                                   ic->body, ic->noex);
+          } else {
+            last_ic = ic;
+            regs[bc[ip+1]] = mri_call(CLASS_OF(tmp), tmp,
+                                      id_plus, 1, &regs[bc[ip+3]], 0, self);
+          }
         }
 
         ip += 4;
         break;
 
-      case kCallZero:
-        TRACE3(call_zero);
-
-        tmp = regs[bc[ip+3]];
-        regs[bc[ip+1]] = mri_call(CLASS_OF(tmp), tmp,
-                               cc_->literals[bc[ip+2]],
-                               0, 0, 0, self);
-        ip += 4;
-        break;
       case kCall:
         TRACE3(call);
 
         tmp = regs[bc[ip+3]];
+        tm2 = CLASS_OF(tmp);
 
-        regs[bc[ip+1]] = mri_call(CLASS_OF(tmp), tmp,
-                               cc_->literals[bc[ip+2]],
-                               next_args_len, next_args, 0, self);
+        if(ic->klass == tm2) {
+          regs[bc[ip+1]] = xlr8r_call0(ic->origin, tmp,
+                                 cc_->literals[bc[ip+2]],
+                                 ic->id,
+                                 next_args_len, next_args,
+                                 ic->body, ic->noex);
+        } else {
+          last_ic = ic;
+          regs[bc[ip+1]] = mri_call(tm2, tmp,
+                                 cc_->literals[bc[ip+2]],
+                                 next_args_len, next_args, 0, self);
+        }
+
+        next_args_len = 0;
         ip += 4;
         break;
       case kCallWithBlock:
@@ -378,14 +409,28 @@ public:
         regs[bc[ip+1]] = call_block(vals[1], vals[0], 
                                     cc_->literals[bc[ip+2]],
                                     next_args_len, next_args, 0, self);
+        next_args_len = 0;
         ip += 4;
         break;
       case kPrivateCall:
         TRACE2(private_call);
 
-        regs[bc[ip+1]] = mri_call(CLASS_OF(self), self,
-                               cc_->literals[bc[ip+2]],
-                               next_args_len, next_args, 1, self);
+        tm2 = CLASS_OF(self);
+
+        if(ic->klass == tm2) {
+          regs[bc[ip+1]] = xlr8r_call0(ic->origin, self,
+                                 cc_->literals[bc[ip+2]],
+                                 ic->id,
+                                 next_args_len, next_args,
+                                 ic->body, ic->noex);
+        } else {
+          last_ic = ic;
+          regs[bc[ip+1]] = mri_call(tm2, self,
+                                 cc_->literals[bc[ip+2]],
+                                 next_args_len, next_args, 1, self);
+        }
+
+        next_args_len = 0;
         ip += 3;
         break;
       case kPrivateCallWithBlock:
@@ -396,6 +441,7 @@ public:
         regs[bc[ip+1]] = call_block(self, vals[0],
                                     cc_->literals[bc[ip+2]],
                                     next_args_len, next_args, 1, self);
+        next_args_len = 0;
         ip += 4;
         break;
       case kReturn:
@@ -568,12 +614,14 @@ class RegisterCompiler {
 
   bc buf_[1024];
   int ip_;
+  int caches_;
 
 public:
 
   RegisterCompiler()
     : next_reg_(0)
     , ip_(0)
+    , caches_(0)
   {}
 
   int add_literal(VALUE val) {
@@ -586,6 +634,10 @@ public:
     int reg = next_reg_++;
     if(reg > max_reg_) max_reg_ = reg;
     return reg;
+  }
+
+  int next_cache() {
+    return caches_++;
   }
 
   void reset_reg(int r) {
@@ -625,6 +677,9 @@ public:
     cc->num_registers = max_reg_ + 1;
     cc->bytecode = (bc*)calloc(ip_, sizeof(bc));
     memcpy(cc->bytecode, buf_, ip_);
+
+    cc->caches = (InlineCache*)calloc(caches_, sizeof(InlineCache));
+    cc->num_caches = caches_;
 
     cc->caller_obj.data = cc;
     cc->caller_obj.func = RegisterInterpreter::caller;
@@ -725,8 +780,12 @@ again:
       {
         int r = next_reg();
         if(!compile(node->nd_recv, r)) return false;
+
         if(!node->nd_args) {
-          add_op8(kCallZero);
+          add_op8(kSetCache);
+          add_op8(next_cache());
+
+          add_op8(kCall);
           add_op8(dest);
           add_op8(add_literal(node->nd_mid));
           add_op8(r);
@@ -740,6 +799,9 @@ again:
 
             if(!compile(tmp->nd_head, q)) return false;
 
+            add_op8(kSetCache);
+            add_op8(next_cache());
+
             add_op8(kPlus);
             add_op8(dest);
             add_op8(r);
@@ -749,6 +811,9 @@ again:
               if(!compile(tmp->nd_head, next_reg())) return false;
               tmp = tmp->nd_next;
             }
+
+            add_op8(kSetCache);
+            add_op8(next_cache());
 
             add_op8(kSetArgs);
             add_op8(r+1);
