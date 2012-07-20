@@ -427,25 +427,13 @@ static NODE* specialize(NODE* scope) {
         blk->u2.value = (VALUE)&spec_lit_obj;
         break;
       default:
-        blk->flags |= FL_FREEZE;
-        blk->u2.value = (VALUE)&spec_no_args_obj;
+        compile_node(blk);
       }
     } else {
-      if(!compile_node(blk)) {
-        printf("failed compile\n");
-      } else {
-        printf("compiled!\n");
-      }
-
-      blk->flags |= FL_FREEZE;
-      blk->u2.value = (VALUE)&spec_no_args_obj;
+      compile_node(blk);
     }
   } else {
-    if(!compile_node(blk)) {
-      printf("failed compile\n");
-    } else {
-      printf("compiled!\n");
-    }
+    compile_node(blk);
   }
 
 done:

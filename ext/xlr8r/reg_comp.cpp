@@ -37,10 +37,15 @@ enum Commands {
   kCallWithBlock,
   kConvertProc,
   kSetArgs,
-  kSetArgsFromCat,
+  kSetArgsFromArray,
+  kArrayConcat,
+  kArraySplatCoerce,
+  kArrayAppend,
   kCreateArray,
   kCreateString,
-  kSetCache
+  kSetCache,
+  kLastArg,
+  kMoveReg
 };
 
 typedef VALUE (*caller)(VALUE klass, VALUE recv, ID id, ID oid,
@@ -67,7 +72,7 @@ struct CompiledCode {
 };
 
 
-static bool trace = false;
+static const bool trace = false;
 #define TRACE(str) if(trace) printf("=> " #str "\n");
 
 #define TRACE1(str) if(trace) printf("=> " #str ", %d\n", bc[ip+1]);
@@ -378,14 +383,40 @@ public:
 
         ip += 3;
         break;
-      case kSetArgsFromCat:
+
+      case kSetArgsFromArray:
         TRACE2(set_args_from_cat);
 
-        tmp = rb_ary_concat(regs[bc[ip+1]], splat_value(regs[bc[ip+2]]));
+        tmp = regs[bc[ip+1]];
         next_args = RARRAY(tmp)->ptr;
         next_args_len = RARRAY(tmp)->len;
 
-        ip += 3;
+        ip += 2;
+        break;
+
+      case kArrayConcat:
+        TRACE2(array_concat);
+
+        regs[bc[ip+1]] = rb_ary_concat(regs[bc[ip+2]],
+                           splat_value(regs[bc[ip+3]]));
+        ip += 4;
+        break;
+
+      case kArrayAppend:
+        TRACE2(array_prepend);
+
+        regs[bc[ip+1]] = rb_ary_push(rb_ary_dup(regs[bc[ip+2]]),
+                                     regs[bc[ip+3]]);
+
+        ip += 4;
+        break;
+
+      case kArraySplatCoerce:
+        TRACE2(array_splat_coerce);
+
+        regs[bc[ip+1]] = splat_value(regs[bc[ip+1]]);
+
+        ip += 2;
         break;
 
       case kPlus:
@@ -521,6 +552,20 @@ public:
         ip += 3;
         break;
 
+      case kLastArg:
+        TRACE1(last_arg);
+
+        regs[bc[ip+1]] = next_args[next_args_len-1];
+        ip += 2;
+        break;
+
+      case kMoveReg:
+        TRACE2(move_reg);
+
+        regs[bc[ip+1]] = regs[bc[ip+2]];
+        ip += 3;
+        break;
+
       default:
         printf("Bad opcode: %d\n", bc[ip]);
         rb_bug("xlr8r crashed");
@@ -628,7 +673,6 @@ class Runtime {
 
 public:
   void mark() {
-    printf("marking!\n");
     for(std::list<CompiledCode*>::iterator i = code_.begin();
         i != code_.end();
         ++i)
@@ -684,8 +728,9 @@ public:
     return buf_ + ip_;
   }
 
-  void add_op8(bc cmd) {
-    buf_[ip_++] = cmd;
+  void add_op8(int cmd) {
+    if(cmd > 255) rb_bug("add_op8 out of bounds!");
+    buf_[ip_++] = (bc)cmd;
   }
 
   void add_op32(uint32_t i) {
@@ -728,7 +773,7 @@ public:
     int idx;
 
 again:
-    printf("on %s\n", node_name(node));
+    // printf("=> %s\n", node_name(node));
 
     switch(nd_type(node)) {
     case NODE_BLOCK:
@@ -812,6 +857,48 @@ again:
       add_op8(add_literal(node->nd_vid));
       break;
 
+    case NODE_ARGSCAT:
+      {
+        int ah = next_reg();
+        int at = next_reg();
+
+        if(!compile(node->nd_head, ah)) return false;
+        if(!compile(node->nd_body, at)) return false;
+
+        add_op8(kArrayConcat);
+        add_op8(dest);
+        add_op8(ah);
+        add_op8(at);
+
+        reset_reg(ah);
+      }
+
+      break;
+
+    case NODE_ARGSPUSH:
+      {
+        int ah = next_reg();
+        int at = next_reg();
+
+        if(!compile(node->nd_head, ah)) return false;
+        if(!compile(node->nd_body, at)) return false;
+
+        add_op8(kArrayAppend);
+        add_op8(dest);
+        add_op8(ah);
+        add_op8(at);
+
+        reset_reg(ah);
+      }
+
+      break;
+
+    case NODE_SPLAT:
+      if(!compile(node->nd_head, dest)) return false;
+      add_op8(kArraySplatCoerce);
+      add_op8(dest);
+      break;
+
     case NODE_CALL:
       {
         int r = next_reg();
@@ -826,34 +913,49 @@ again:
           add_op8(add_literal(node->nd_mid));
           add_op8(r);
         } else {
-          if(nd_type(node->nd_args) != NODE_ARRAY) return false;
-
           tmp = node->nd_args;
+          if(nd_type(tmp) == NODE_ARRAY) {
+            if(node->nd_mid == id_plus && tmp->nd_alen == 1) {
+              int q = next_reg();
 
-          if(node->nd_mid == id_plus && tmp->nd_alen == 1) {
-            int q = next_reg();
+              if(!compile(tmp->nd_head, q)) return false;
 
-            if(!compile(tmp->nd_head, q)) return false;
+              add_op8(kSetCache);
+              add_op8(next_cache());
 
-            add_op8(kSetCache);
-            add_op8(next_cache());
+              add_op8(kPlus);
+              add_op8(dest);
+              add_op8(r);
+              add_op8(q);
+            } else {
+              while(tmp) {
+                if(!compile(tmp->nd_head, next_reg())) return false;
+                tmp = tmp->nd_next;
+              }
 
-            add_op8(kPlus);
-            add_op8(dest);
-            add_op8(r);
-            add_op8(q);
-          } else {
-            while(tmp) {
-              if(!compile(tmp->nd_head, next_reg())) return false;
-              tmp = tmp->nd_next;
+              add_op8(kSetCache);
+              add_op8(next_cache());
+
+              add_op8(kSetArgs);
+              add_op8(r+1);
+              add_op8(node->nd_args->nd_alen);
+
+              add_op8(kCall);
+              add_op8(dest);
+              add_op8(add_literal(node->nd_mid));
+              add_op8(r);
             }
+          } else {
+            int ar = next_reg();
+            if(!compile(tmp, ar)) return false;
 
             add_op8(kSetCache);
             add_op8(next_cache());
 
-            add_op8(kSetArgs);
-            add_op8(r+1);
-            add_op8(node->nd_args->nd_alen);
+            add_op8(kSetArgsFromArray);
+            add_op8(ar);
+
+            reset_reg(ar);
 
             add_op8(kCall);
             add_op8(dest);
@@ -869,30 +971,140 @@ again:
 
     case NODE_FCALL:
       if(!node->nd_args) {
+        add_op8(kSetCache);
+        add_op8(next_cache());
+
         add_op8(kPrivateCall);
         add_op8(dest);
         add_op8(add_literal(node->nd_mid));
       } else {
-        int r = next_reg();
-        if(nd_type(node->nd_args) != NODE_ARRAY) return false;
-
         tmp = node->nd_args;
 
-        if(!compile(tmp->nd_head, r)) return false;
-        tmp = tmp->nd_next;
+        if(nd_type(tmp) == NODE_ARRAY) {
+          int r = next_reg();
 
-        while(tmp) {
-          if(!compile(tmp->nd_head, next_reg())) return false;
+          if(!compile(tmp->nd_head, r)) return false;
           tmp = tmp->nd_next;
+
+          while(tmp) {
+            if(!compile(tmp->nd_head, next_reg())) return false;
+            tmp = tmp->nd_next;
+          }
+
+          add_op8(kSetArgs);
+          add_op8(r);
+          add_op8(node->nd_args->nd_alen);
+
+          reset_reg(r);
+        } else {
+          int ar = next_reg();
+
+          if(!compile(tmp, ar)) return false;
+
+          add_op8(kSetArgsFromArray);
+          add_op8(ar);
+
+          reset_reg(ar);
         }
 
-        add_op8(kSetArgs);
-        add_op8(r);
-        add_op8(node->nd_args->nd_alen);
+        add_op8(kSetCache);
+        add_op8(next_cache());
 
         add_op8(kPrivateCall);
         add_op8(dest);
         add_op8(add_literal(node->nd_mid));
+      }
+
+      break;
+
+    case NODE_ATTRASGN:
+      if(node->nd_recv == (NODE*)1) {
+        tmp = node->nd_args;
+
+        if(nd_type(tmp) == NODE_ARRAY) {
+          int r = next_reg();
+
+          if(!compile(tmp->nd_head, r)) return false;
+          tmp = tmp->nd_next;
+
+          while(tmp) {
+            if(!compile(tmp->nd_head, next_reg())) return false;
+            tmp = tmp->nd_next;
+          }
+
+          add_op8(kSetArgs);
+          add_op8(r);
+          add_op8(node->nd_args->nd_alen);
+
+          reset_reg(r);
+        } else {
+          int ar = next_reg();
+
+          if(!compile(tmp, ar)) return false;
+
+          add_op8(kSetArgsFromArray);
+          add_op8(ar);
+
+          reset_reg(ar);
+        }
+
+        add_op8(kSetCache);
+        add_op8(next_cache());
+
+        int ret = next_reg();
+
+        add_op8(kLastArg);
+        add_op8(ret);
+
+        add_op8(kPrivateCall);
+        add_op8(dest);
+        add_op8(add_literal(node->nd_mid));
+
+        add_op8(kMoveReg);
+        add_op8(dest);
+        add_op8(ret);
+
+        reset_reg(ret);
+      } else {
+        int r = next_reg();
+        if(!compile(node->nd_recv, r)) return false;
+
+        tmp = node->nd_args;
+        if(nd_type(tmp) == NODE_ARRAY) {
+          while(tmp) {
+            if(!compile(tmp->nd_head, next_reg())) return false;
+            tmp = tmp->nd_next;
+          }
+
+          add_op8(kSetArgs);
+          add_op8(r+1);
+          add_op8(node->nd_args->nd_alen);
+        } else {
+          int ar = next_reg();
+          if(!compile(tmp, ar)) return false;
+
+          add_op8(kSetArgsFromArray);
+          add_op8(ar);
+
+          reset_reg(ar);
+        }
+
+        int ret = next_reg();
+
+        add_op8(kLastArg);
+        add_op8(ret);
+
+        add_op8(kSetCache);
+        add_op8(next_cache());
+
+        add_op8(kCall);
+        add_op8(dest);
+        add_op8(add_literal(node->nd_mid));
+        add_op8(r);
+
+        add_op8(kMoveReg);
+        add_op8(dest);
+        add_op8(ret);
 
         reset_reg(r);
       }
@@ -949,19 +1161,18 @@ again:
             add_op8(r+1);
             add_op8(node->nd_args->nd_alen);
 
-          } else if(nd_type(tmp) == NODE_ARGSCAT) {
-            int ah = next_reg();
-            int at = next_reg();
-
-            if(!compile(tmp->nd_head, ah)) return false;
-            if(!compile(tmp->nd_body, at)) return false;
-
-            add_op8(kSetArgsFromCat);
-            add_op8(ah);
-            add_op8(at);
           } else {
-            break;
+            int ar = next_reg();
+            if(!compile(tmp, ar)) return false;
+
+            add_op8(kSetArgsFromArray);
+            add_op8(ar);
+
+            reset_reg(ar);
           }
+
+          add_op8(kSetCache);
+          add_op8(next_cache());
 
           add_op8(kPrivateCallWithBlock);
           add_op8(dest);
@@ -976,16 +1187,27 @@ again:
 
           tmp = node->nd_args;
 
-          if(nd_type(tmp) != NODE_ARRAY) goto bp_unsup;
+          if(nd_type(tmp) == NODE_ARRAY) {
+            while(tmp) {
+              if(!compile(tmp->nd_head, next_reg())) return false;
+              tmp = tmp->nd_next;
+            }
 
-          while(tmp) {
-            if(!compile(tmp->nd_head, next_reg())) return false;
-            tmp = tmp->nd_next;
+            add_op8(kSetArgs);
+            add_op8(r+2);
+            add_op8(node->nd_args->nd_alen);
+          } else {
+            int ar = next_reg();
+            if(!compile(tmp, ar)) return false;
+
+            add_op8(kSetArgsFromArray);
+            add_op8(ar);
+
+            reset_reg(ar);
           }
 
-          add_op8(kSetArgs);
-          add_op8(r+2);
-          add_op8(node->nd_args->nd_alen);
+          add_op8(kSetCache);
+          add_op8(next_cache());
 
           add_op8(kCallWithBlock);
           add_op8(dest);
@@ -1030,7 +1252,6 @@ bp_unsup:
     case NODE_NEXT:
     case NODE_REDO:
     case NODE_RETRY:
-    case NODE_SPLAT:
     case NODE_TO_ARY:
     case NODE_SVALUE:
     case NODE_YIELD:
@@ -1041,7 +1262,6 @@ bp_unsup:
     case NODE_DOT3:
     case NODE_RETURN:
     case NODE_VCALL:
-    case NODE_ATTRASGN:
     case NODE_SCOPE:
     case NODE_IVAR:
     case NODE_IASGN:
@@ -1091,8 +1311,6 @@ bp_unsup:
     case NODE_CDECL:
     case NODE_SUPER:
     case NODE_ZSUPER:
-    case NODE_ARGSPUSH:
-    case NODE_ARGSCAT:
     case NODE_RESCUE:
     case NODE_ENSURE:
     case NODE_ITER:
@@ -1122,7 +1340,10 @@ extern "C" int compile_node(NODE* blk) {
   if(cc) {
     blk->flags |= FL_FREEZE;
     blk->u2.value = (VALUE)&cc->caller_obj;
+    return 1;
   }
+
+  return 0;
 }
 
 void runtime_mark(void*) {
