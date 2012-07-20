@@ -19,6 +19,7 @@ enum Commands {
   kNOOP = 0,
   kLoadLiteral,
   kLoadLiteral32,
+  kLoadSmallInteger,
   kLoadSelf,
   kLoadTrue,
   kLoadFalse,
@@ -73,12 +74,12 @@ struct CompiledCode {
 
 
 static const bool trace = false;
-#define TRACE(str) if(trace) printf("=> " #str "\n");
+#define TRACE(str) if(trace) printf("%03d " #str "\n", ip);
 
-#define TRACE1(str) if(trace) printf("=> " #str ", %d\n", bc[ip+1]);
-#define TRACE2(str) if(trace) printf("=> " #str ", %d, %d\n", bc[ip+1], bc[ip+2]);
-#define TRACE3(str) if(trace) printf("=> " #str ", %d, %d, %d\n", bc[ip+1], bc[ip+2], bc[ip+3]);
-#define TRACE4(str) if(trace) printf("=> " #str ", %d, %d, %d, %d\n", bc[ip+1], bc[ip+2], bc[ip+3], bc[ip+4]);
+#define TRACE1(str) if(trace) printf("%03d " #str ", %d\n", ip, bc[ip+1]);
+#define TRACE2(str) if(trace) printf("%03d " #str ", %d, %d\n", ip, bc[ip+1], bc[ip+2]);
+#define TRACE3(str) if(trace) printf("%03d " #str ", %d, %d, %d\n", ip, bc[ip+1], bc[ip+2], bc[ip+3]);
+#define TRACE4(str) if(trace) printf("%03d " #str ", %d, %d, %d, %d\n", ip, bc[ip+1], bc[ip+2], bc[ip+3], bc[ip+4]);
 
 InlineCache* last_ic = 0;
 
@@ -342,6 +343,14 @@ public:
         ip += 3;
         break;
 
+      case kLoadSmallInteger:
+        TRACE2(load_si);
+
+        regs[bc[ip+1]] = INT2FIX(bc[ip+2]);
+
+        ip += 3;
+        break;
+
       case kLoadSelf:
         TRACE1(load_self);
 
@@ -566,6 +575,22 @@ public:
         ip += 3;
         break;
 
+      case kGotoIfFalse:
+        TRACE2(goto_if_false);
+
+        if(!RTEST(regs[bc[ip+1]])) {
+          ip = bc[ip+2];
+        } else {
+          ip += 3;
+        }
+        break;
+
+      case kGoto:
+        TRACE1(goto);
+
+        ip = bc[ip+1];
+        break;
+
       default:
         printf("Bad opcode: %d\n", bc[ip]);
         rb_bug("xlr8r crashed");
@@ -700,6 +725,7 @@ public:
 
   RegisterCompiler()
     : next_reg_(0)
+    , max_reg_(-1)
     , ip_(0)
     , caches_(0)
   {}
@@ -792,16 +818,23 @@ again:
       goto again;
 
     case NODE_LIT:
-      idx = add_literal(node->nd_lit);
-      if(idx < 255) {
-        add_op8(kLoadLiteral);
+      if(FIXNUM_P(node->nd_lit) && FIX2INT(node->nd_lit) < 255) {
+        add_op8(kLoadSmallInteger);
         add_op8(dest);
-        add_op8(idx);
+        add_op8(FIX2INT(node->nd_lit));
       } else {
-        add_op8(kLoadLiteral32);
-        add_op8(dest);
-        add_op32(idx);
+        idx = add_literal(node->nd_lit);
+        if(idx < 255) {
+          add_op8(kLoadLiteral);
+          add_op8(dest);
+          add_op8(idx);
+        } else {
+          add_op8(kLoadLiteral32);
+          add_op8(dest);
+          add_op32(idx);
+        }
       }
+
       break;
 
     case NODE_SELF:
@@ -826,10 +859,10 @@ again:
 
     case NODE_IF:
       {
-        return false;
-
         if(!compile(node->nd_cond, dest)) return false;
         add_op8(kGotoIfFalse);
+        add_op8(dest);
+
         uint8_t* fixup = current_pos();
         add_op8(0);
 

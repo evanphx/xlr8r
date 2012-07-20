@@ -20,6 +20,14 @@ class Test
   def push
     self[*Ary] = 3
   end
+
+  def cond(x)
+    if x
+      1
+    else
+      2
+    end
+  end
 end
 
 public
@@ -33,6 +41,14 @@ def sym; :a; end
 def add(x); x + 1; end
 
 def cached(x); x.m; end
+
+
+puts "== COND"
+t = Test.new
+p t.cond(true)
+p t.cond(true)
+
+puts "== benchmarks"
 
 Benchmark.bm do |x|
   x.report("nil") do
@@ -56,8 +72,6 @@ Benchmark.bm do |x|
   end
 end
 
-t = Test.new
-
 Benchmark.bm do |x|
   x.report("add") do
     total.times { add(1) }
@@ -73,5 +87,9 @@ Benchmark.bm do |x|
 
   x.report("push") do
     total.times { t.push }
+  end
+
+  x.report("cond") do
+    total.times { t.cond(true) }
   end
 end
