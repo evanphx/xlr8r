@@ -163,8 +163,9 @@ public:
     return rb_Array(v);
   }
 
-  static VALUE call_block(VALUE recv, VALUE proc, ID id,
-                          int argc, VALUE* vals,
+  static VALUE call_block(VALUE recv, VALUE proc,
+                          InlineCache* ic, ID id,
+                          int argc, VALUE* argv,
                           int scope, VALUE self)
   {
     VALUE result;
@@ -172,7 +173,20 @@ public:
 
     if(NIL_P(proc)) {
       PUSH_ITER(ITER_NOT);
-      result = mri_call(CLASS_OF(recv), recv, id, argc, vals+2, scope, self);
+
+      VALUE tm2 = CLASS_OF(recv);
+
+      if(ic->klass == tm2) {
+        result = xlr8r_call0(ic->origin, recv,
+                               id, 
+                               ic->id,
+                               argc, argv,
+                               ic->body, ic->noex);
+      } else {
+        last_ic = ic;
+        result = mri_call(tm2, recv, id, argc, argv, scope, self);
+      }
+
       POP_ITER();
       return result;
     }
@@ -193,15 +207,28 @@ public:
 
     if(ruby_block && ruby_block->block_obj == proc) {
       PUSH_ITER(ITER_PAS);
-      result = mri_call(CLASS_OF(recv), recv, id, argc, vals+2, scope, self);
+      VALUE tm2 = CLASS_OF(recv);
+
+      if(ic->klass == tm2) {
+        result = xlr8r_call0(ic->origin, recv,
+                               id, 
+                               ic->id,
+                               argc, argv,
+                               ic->body, ic->noex);
+      } else {
+        last_ic = ic;
+        result = mri_call(tm2, recv, id, argc, argv, scope, self);
+      }
       POP_ITER();
       return result;
     }
 
-    return call_unwraped_block(vals, id, argc, scope, self);
+    return call_unwraped_block(recv, proc, ic, id, argc, argv, scope, self);
   }
 
-  static VALUE call_unwraped_block(VALUE* vals, ID id, int argc,
+  static VALUE call_unwraped_block(VALUE recv, VALUE proc,
+                                   InlineCache* ic, ID id,
+                                   int argc, VALUE* argv,
                                    int scope, VALUE self)
   {
     VALUE b;
@@ -212,9 +239,6 @@ public:
     int state;
     volatile int orphan;
     volatile int safe = ruby_safe_level;
-
-    VALUE proc = vals[0];
-    VALUE recv = vals[1];
 
     Data_Get_Struct(proc, struct BLOCK, data);
     orphan = block_orphan(data);
@@ -240,7 +264,19 @@ public:
         ruby_safe_level = safe;
       }
 
-      result = mri_call(CLASS_OF(recv), recv, id, argc, vals+2, scope, self);
+      VALUE tm2 = CLASS_OF(recv);
+
+      if(ic->klass == tm2) {
+        result = xlr8r_call0(ic->origin, recv,
+                               id, 
+                               ic->id,
+                               argc, argv,
+                               ic->body, ic->noex);
+      } else {
+        last_ic = ic;
+        result = mri_call(tm2, recv, id, argc, argv, scope, self);
+      }
+
     } else if(state == TAG_BREAK && TAG_DST()) {
       result = prot_tag->retval;
       state = 0;
@@ -406,7 +442,7 @@ public:
 
         vals = &regs[bc[ip+3]];
 
-        regs[bc[ip+1]] = call_block(vals[1], vals[0], 
+        regs[bc[ip+1]] = call_block(vals[1], vals[0], ic,
                                     cc_->literals[bc[ip+2]],
                                     next_args_len, next_args, 0, self);
         next_args_len = 0;
@@ -438,7 +474,7 @@ public:
 
         vals = &regs[bc[ip+3]];
 
-        regs[bc[ip+1]] = call_block(self, vals[0],
+        regs[bc[ip+1]] = call_block(self, vals[0], ic,
                                     cc_->literals[bc[ip+2]],
                                     next_args_len, next_args, 1, self);
         next_args_len = 0;
@@ -474,7 +510,7 @@ public:
       case kCreateArray:
         TRACE3(create_array);
 
-        regs[bc[ip+1]] = rb_ary_new4(bc[ip+2], &regs[bc[ip+3]]);
+        regs[bc[ip+1]] = rb_ary_new4(bc[ip+3], &regs[bc[ip+2]]);
         ip += 4;
         break;
 
@@ -873,20 +909,23 @@ again:
 
     case NODE_ARRAY:
       {
-        int r = next_reg();
+        int start = -1;
 
         tmp = node;
         while(tmp) {
-          if(!compile(tmp->nd_head, next_reg())) return false;
+          int r = next_reg();
+          if(start < 0) start = r;
+
+          if(!compile(tmp->nd_head, r)) return false;
           tmp = tmp->nd_next;
         }
 
         add_op8(kCreateArray);
         add_op8(dest);
-        add_op8(r);
+        add_op8(start);
         add_op8(node->nd_alen);
 
-        reset_reg(r);
+        reset_reg(start);
       }
       break;
 
