@@ -5,11 +5,18 @@ C = RbConfig::CONFIG
 
 ruby = File.join(C['bindir'], "#{C['ruby_install_name']}#{C['EXEEXT']}")
 
+def add(f, name, const=nil)
+  diff = @sym_apply - @symbols["_#{name}"]
+  const ||= name.upcase
+
+  f.puts "#define OFFSET_#{const} #{diff}"
+end
+
 File.open "config.h", "w" do |f|
 
   file = ruby
 
-  symbols = {}
+  @symbols = symbols = {}
 
   IO.popen "nm -P #{file}", "r" do |io|
     io.each_line do |l|
@@ -19,6 +26,7 @@ File.open "config.h", "w" do |f|
   end
 
   sym_apply = symbols["_rb_apply"]
+  @sym_apply = sym_apply
 
   c0 = sym_apply - symbols["_rb_call0"]
 
@@ -71,8 +79,18 @@ File.open "config.h", "w" do |f|
   bf = sym_apply - symbols["_blk_free"]
 
   f.puts "#define OFFSET_BLK_FREE #{bf}"
+
+  rj = sym_apply - symbols["_return_jump"]
+
+  f.puts "#define OFFSET_RETURN_JUMP #{rj}"
+
+  add f, "proc_invoke"
+  add f, "umethod_bind"
+  add f, "method_call"
 end
 
 $CFLAGS.gsub!(/-O\d/,"-O0") if ENV['DEBUG']
+
+$CFLAGS << " -Wall"
 
 create_makefile "xlr8r_ext"

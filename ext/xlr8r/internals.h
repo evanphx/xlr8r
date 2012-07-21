@@ -432,6 +432,12 @@ extern void (*mri_assign)(VALUE self, NODE* lhs, VALUE val, int pcall);
 extern VALUE (*mri_call)(VALUE klass, VALUE recv, ID mid,
                   int argc, const VALUE* argv, int scope, VALUE self);
 
+extern VALUE (*mri_return_jump)(VALUE val);
+
+extern VALUE (*mri_proc_invoke)(VALUE proc, VALUE args, VALUE self, VALUE klass);
+extern VALUE (*mri_umethod_bind)(VALUE method, VALUE recv);
+extern VALUE (*mri_method_call)(int argc, VALUE* argv, VALUE method);
+
 NODE* setup_args(NODE* body, VALUE recv,
                        int argc, VALUE* argv, VALUE* local_vars);
 

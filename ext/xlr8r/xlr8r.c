@@ -43,6 +43,11 @@ VALUE (*mri_call)(VALUE klass, VALUE recv, ID mid,
 
 VALUE (*mri_ev_const_get)(NODE* cref, ID id, VALUE self);
 
+VALUE (*mri_return_jump)(VALUE val);
+VALUE (*mri_proc_invoke)(VALUE proc, VALUE args, VALUE self, VALUE klass);
+VALUE (*mri_umethod_bind)(VALUE method, VALUE recv);
+VALUE (*mri_method_call)(int argc, VALUE* argv, VALUE method);
+
 static inline VALUE
 call_cfunc(func, recv, len, argc, argv)
     VALUE (*func)();
@@ -234,7 +239,7 @@ struct custom_call {
   caller func;
 };
 
-static struct custom_call spec_no_args_obj = { 0, spec_no_args };
+/* static struct custom_call spec_no_args_obj = { 0, spec_no_args }; */
 
 const char* node_name(NODE* n) {
   if(!n) return "<NULL>";
@@ -391,6 +396,8 @@ VALUE spec_lit(VALUE klass, VALUE recv, ID id, ID oid,
 
 static struct custom_call spec_lit_obj = { 0, spec_lit };
 
+int compile_node(NODE* blk);
+
 static NODE* specialize(NODE* scope) {
   NODE* blk = scope->nd_next;
   NODE* args = 0;
@@ -529,7 +536,6 @@ static VALUE generic_call(VALUE klass, VALUE recv, ID id, ID oid,
                  int argc, VALUE* argv, NODE* volatile body, int flags)
 {
   volatile VALUE result = Qnil;
-  int itr;
   volatile int safe = -1;
   NODE *b2;
   TMP_PROTECT;
@@ -620,13 +626,16 @@ static VALUE generic_call(VALUE klass, VALUE recv, ID id, ID oid,
   return result;
 }
 
+static VALUE splat_value(VALUE v) {
+  if (NIL_P(v)) return rb_ary_new3(1, Qnil);
+  return rb_Array(v);
+}
+
 VALUE xlr8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
                  int argc, VALUE* argv, NODE* volatile body, int flags)
 {
   volatile VALUE result = Qnil;
   int itr;
-  volatile int safe = -1;
-  NODE *b2;
   TMP_PROTECT;
 
   if(last_ic) {
@@ -736,7 +745,7 @@ VALUE xlr8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
       break;
 
     case NODE_DMETHOD:
-      result = method_call(argc, argv, umethod_bind(body->nd_cval, recv));
+      result = mri_method_call(argc, argv, mri_umethod_bind(body->nd_cval, recv));
       break;
 
     case NODE_BMETHOD:
@@ -746,7 +755,7 @@ VALUE xlr8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
         Data_Get_Struct(body->nd_cval, struct BLOCK, data);
         EXEC_EVENT_HOOK(RUBY_EVENT_CALL, data->body, recv, id, klass);
       }
-      result = proc_invoke(body->nd_cval, rb_ary_new4(argc, argv), recv, klass);
+      result = mri_proc_invoke(body->nd_cval, rb_ary_new4(argc, argv), recv, klass);
       if (event_hooks) {
         EXEC_EVENT_HOOK(RUBY_EVENT_RETURN, ruby_current_node, recv, id, klass);
       }
@@ -762,7 +771,6 @@ VALUE xlr8r_call0(VALUE klass, VALUE recv, ID id, ID oid,
     }
   }
 
-cleanup:
   POP_FRAME();
   POP_ITER();
   return result;
@@ -789,6 +797,8 @@ int diff = 0x6149;
 
 #include "config.h"
 
+void init_runtime();
+
 #define APPLY_OFFSET(base, offset) (void*)(((uintptr_t)base) - offset)
 
 void Init_xlr8r_ext() {
@@ -812,6 +822,11 @@ void Init_xlr8r_ext() {
   int_block_unique = APPLY_OFFSET(addr, OFFSET_BLOCK_UNIQUE);
 
   mri_blk_free = APPLY_OFFSET(addr, OFFSET_BLK_FREE);
+
+  mri_return_jump = APPLY_OFFSET(addr, OFFSET_RETURN_JUMP);
+  mri_proc_invoke = APPLY_OFFSET(addr, OFFSET_PROC_INVOKE);
+  mri_umethod_bind = APPLY_OFFSET(addr, OFFSET_UMETHOD_BIND);
+  mri_method_call = APPLY_OFFSET(addr, OFFSET_METHOD_CALL);
 
   uintptr_t dest = ((uintptr_t)xlr8r_call0) - (((uintptr_t)call0) + 6);
   uint8_t* buf = (uint8_t*)call0;

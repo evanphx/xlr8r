@@ -25,12 +25,15 @@ enum Commands {
   kLoadFalse,
   kLoadNil,
   kGotoIfFalse,
+  kGotoIfTrue,
   kGoto,
   kCall,
   kPlus,
   kPrivateCall,
   kPrivateCallWithBlock,
+  kLocalCall,
   kReturn,
+  kJumpReturn,
   kConst,
   kCurrentBlock,
   kSetLocal,
@@ -46,7 +49,9 @@ enum Commands {
   kCreateString,
   kSetCache,
   kLastArg,
-  kMoveReg
+  kMoveReg,
+  kEvalNode,
+  kEvalNode32
 };
 
 typedef VALUE (*caller)(VALUE klass, VALUE recv, ID id, ID oid,
@@ -237,7 +242,6 @@ public:
                                    int argc, VALUE* argv,
                                    int scope, VALUE self)
   {
-    VALUE b;
     struct BLOCK * volatile old_block;
     struct BLOCK _block;
     struct BLOCK *data;
@@ -322,8 +326,8 @@ public:
 
   VALUE interpret(VALUE self) {
     uint8_t* bc = cc_->bytecode;
+    uint32_t it;
     int ip = 0;
-    int dest;
     VALUE tmp, tm2;
     VALUE *vals;
 
@@ -331,6 +335,7 @@ public:
     VALUE* next_args;
 
     InlineCache* ic;
+    NODE* node = 0;
 
     VALUE* regs = (VALUE*)alloca(cc_->num_registers * sizeof(VALUE));
 
@@ -431,28 +436,29 @@ public:
       case kPlus:
         TRACE3(plus);
 
-        tmp = regs[bc[ip+2]];
-        tm2 = regs[bc[ip+3]];
+        tmp = regs[bc[ip+3]];
+        tm2 = regs[bc[ip+4]];
 
-        if(FIXNUM_P(tmp) | FIXNUM_P(tm2)) {
+        if(FIXNUM_P(tmp) && FIXNUM_P(tm2)) {
           regs[bc[ip+1]] = add_fixnum(tmp, tm2);
         } else {
           tm2 = CLASS_OF(tmp);
+          ruby_current_node = (NODE*)cc_->literals[bc[ip+2]];
 
           if(ic->klass == tm2) {
             regs[bc[ip+1]] = xlr8r_call0(ic->origin, tmp,
                                    id_plus, 
                                    ic->id,
-                                   1, &regs[bc[ip+3]],
+                                   1, &regs[bc[ip+4]],
                                    ic->body, ic->noex);
           } else {
             last_ic = ic;
             regs[bc[ip+1]] = mri_call(CLASS_OF(tmp), tmp,
-                                      id_plus, 1, &regs[bc[ip+3]], 0, self);
+                                      id_plus, 1, &regs[bc[ip+4]], 0, self);
           }
         }
 
-        ip += 4;
+        ip += 5;
         break;
 
       case kCall:
@@ -461,16 +467,19 @@ public:
         tmp = regs[bc[ip+3]];
         tm2 = CLASS_OF(tmp);
 
+        node = (NODE*)cc_->literals[bc[ip+2]];
+        ruby_current_node = node;
+
         if(ic->klass == tm2) {
           regs[bc[ip+1]] = xlr8r_call0(ic->origin, tmp,
-                                 cc_->literals[bc[ip+2]],
+                                 node->nd_mid,
                                  ic->id,
                                  next_args_len, next_args,
                                  ic->body, ic->noex);
         } else {
           last_ic = ic;
           regs[bc[ip+1]] = mri_call(tm2, tmp,
-                                 cc_->literals[bc[ip+2]],
+                                 node->nd_mid,
                                  next_args_len, next_args, 0, self);
         }
 
@@ -482,27 +491,58 @@ public:
 
         vals = &regs[bc[ip+3]];
 
+        node = (NODE*)cc_->literals[bc[ip+2]];
+        ruby_current_node = node;
+
         regs[bc[ip+1]] = call_block(vals[1], vals[0], ic,
-                                    cc_->literals[bc[ip+2]],
+                                    node->nd_mid,
                                     next_args_len, next_args, 0, self);
         next_args_len = 0;
         ip += 4;
         break;
+
+      case kLocalCall:
+        TRACE2(local_call);
+
+        tm2 = CLASS_OF(self);
+
+        node = (NODE*)cc_->literals[bc[ip+2]];
+        ruby_current_node = node;
+
+        if(ic->klass == tm2) {
+          regs[bc[ip+1]] = xlr8r_call0(ic->origin, self,
+                                 node->nd_mid,
+                                 ic->id,
+                                 0, 0,
+                                 ic->body, ic->noex);
+        } else {
+          last_ic = ic;
+          regs[bc[ip+1]] = mri_call(tm2, self,
+                                 node->nd_mid,
+                                 0, 0, 2, self);
+        }
+
+        ip += 3;
+        break;
+
       case kPrivateCall:
         TRACE2(private_call);
 
         tm2 = CLASS_OF(self);
 
+        node = (NODE*)cc_->literals[bc[ip+2]];
+        ruby_current_node = node;
+
         if(ic->klass == tm2) {
           regs[bc[ip+1]] = xlr8r_call0(ic->origin, self,
-                                 cc_->literals[bc[ip+2]],
+                                 node->nd_mid,
                                  ic->id,
                                  next_args_len, next_args,
                                  ic->body, ic->noex);
         } else {
           last_ic = ic;
           regs[bc[ip+1]] = mri_call(tm2, self,
-                                 cc_->literals[bc[ip+2]],
+                                 node->nd_mid,
                                  next_args_len, next_args, 1, self);
         }
 
@@ -512,10 +552,13 @@ public:
       case kPrivateCallWithBlock:
         TRACE3(private_call_with_block);
 
+        node = (NODE*)cc_->literals[bc[ip+2]];
+        ruby_current_node = node;
+
         vals = &regs[bc[ip+3]];
 
         regs[bc[ip+1]] = call_block(self, vals[0], ic,
-                                    cc_->literals[bc[ip+2]],
+                                    node->nd_mid,
                                     next_args_len, next_args, 1, self);
         next_args_len = 0;
         ip += 4;
@@ -523,6 +566,14 @@ public:
       case kReturn:
         TRACE1(return);
         return regs[bc[ip+1]];
+
+      case kJumpReturn:
+        TRACE1(jump_return);
+        mri_return_jump(regs[bc[ip+1]]);
+
+        ip += 2;
+        break;
+
       case kConst:
         TRACE2(const);
         regs[bc[ip+1]] = ev_const_get(ruby_cref,
@@ -585,12 +636,39 @@ public:
         }
         break;
 
+      case kGotoIfTrue:
+        TRACE2(goto_if_true);
+
+        if(RTEST(regs[bc[ip+1]])) {
+          ip = bc[ip+2];
+        } else {
+          ip += 3;
+        }
+        break;
+
       case kGoto:
         TRACE1(goto);
 
         ip = bc[ip+1];
         break;
 
+      case kEvalNode:
+        TRACE2(eval_node);
+
+        regs[bc[ip+1]] = mri_eval(self, (NODE*)cc_->literals[bc[ip+2]]);
+
+        ip += 3;
+        break;
+
+      case kEvalNode32:
+        it = *(int*)(bc + (ip+2));
+
+        if(trace) printf("%03d eval_node_32 %d, %d\n", ip, bc[ip+1], it);
+
+        regs[bc[ip+1]] = mri_eval(self, (NODE*)cc_->literals[it]);
+
+        ip += 6;
+        break;
       default:
         printf("Bad opcode: %d\n", bc[ip]);
         rb_bug("xlr8r crashed");
@@ -736,6 +814,10 @@ public:
     return idx;
   }
 
+  int add_literal(NODE* node) {
+    return add_literal((VALUE)node);
+  }
+
   int next_reg() {
     int reg = next_reg_++;
     if(reg > max_reg_) max_reg_ = reg;
@@ -818,7 +900,9 @@ again:
       goto again;
 
     case NODE_LIT:
-      if(FIXNUM_P(node->nd_lit) && FIX2INT(node->nd_lit) < 255) {
+      if(FIXNUM_P(node->nd_lit) &&
+          FIX2INT(node->nd_lit) < 255 &&
+          FIX2INT(node->nd_lit) >= 0) {
         add_op8(kLoadSmallInteger);
         add_op8(dest);
         add_op8(FIX2INT(node->nd_lit));
@@ -859,28 +943,48 @@ again:
 
     case NODE_IF:
       {
-        if(!compile(node->nd_cond, dest)) return false;
-        add_op8(kGotoIfFalse);
-        add_op8(dest);
+        if(!node->nd_body && node->nd_else) {
+          if(!compile(node->nd_cond, dest)) return false;
+          add_op8(kGotoIfTrue);
+          add_op8(dest);
 
-        uint8_t* fixup = current_pos();
-        add_op8(0);
+          uint8_t* fixup = current_pos();
+          add_op8(0);
 
-        if(!compile(node->nd_body, dest)) return false;
-        add_op8(kGoto);
-        uint8_t* fin = current_pos();
-        add_op8(0);
-
-        *fixup = ip_;
-
-        if(node->nd_else) {
           if(!compile(node->nd_else, dest)) return false;
-        } else {
+          add_op8(kGoto);
+          uint8_t* fin = current_pos();
+          add_op8(0);
+
+          *fixup = ip_;
           add_op8(kLoadNil);
           add_op8(dest);
-        }
 
-        *fin = ip_;
+          *fin = ip_;
+        } else {
+          if(!compile(node->nd_cond, dest)) return false;
+          add_op8(kGotoIfFalse);
+          add_op8(dest);
+
+          uint8_t* fixup = current_pos();
+          add_op8(0);
+
+          if(!compile(node->nd_body, dest)) return false;
+          add_op8(kGoto);
+          uint8_t* fin = current_pos();
+          add_op8(0);
+
+          *fixup = ip_;
+
+          if(node->nd_else) {
+            if(!compile(node->nd_else, dest)) return false;
+          } else {
+            add_op8(kLoadNil);
+            add_op8(dest);
+          }
+
+          *fin = ip_;
+        }
       }
       break;
 
@@ -943,7 +1047,7 @@ again:
 
           add_op8(kCall);
           add_op8(dest);
-          add_op8(add_literal(node->nd_mid));
+          add_op8(add_literal(node));
           add_op8(r);
         } else {
           tmp = node->nd_args;
@@ -958,6 +1062,7 @@ again:
 
               add_op8(kPlus);
               add_op8(dest);
+              add_op8(add_literal(node));
               add_op8(r);
               add_op8(q);
             } else {
@@ -975,7 +1080,7 @@ again:
 
               add_op8(kCall);
               add_op8(dest);
-              add_op8(add_literal(node->nd_mid));
+              add_op8(add_literal(node));
               add_op8(r);
             }
           } else {
@@ -992,7 +1097,7 @@ again:
 
             add_op8(kCall);
             add_op8(dest);
-            add_op8(add_literal(node->nd_mid));
+            add_op8(add_literal(node));
             add_op8(r);
           }
         }
@@ -1002,6 +1107,15 @@ again:
 
       break;
 
+    case NODE_VCALL:
+      add_op8(kSetCache);
+      add_op8(next_cache());
+
+      add_op8(kLocalCall);
+      add_op8(dest);
+      add_op8(add_literal(node));
+      break;
+
     case NODE_FCALL:
       if(!node->nd_args) {
         add_op8(kSetCache);
@@ -1009,7 +1123,7 @@ again:
 
         add_op8(kPrivateCall);
         add_op8(dest);
-        add_op8(add_literal(node->nd_mid));
+        add_op8(add_literal(node));
       } else {
         tmp = node->nd_args;
 
@@ -1045,7 +1159,7 @@ again:
 
         add_op8(kPrivateCall);
         add_op8(dest);
-        add_op8(add_literal(node->nd_mid));
+        add_op8(add_literal(node));
       }
 
       break;
@@ -1091,7 +1205,7 @@ again:
 
         add_op8(kPrivateCall);
         add_op8(dest);
-        add_op8(add_literal(node->nd_mid));
+        add_op8(add_literal(node));
 
         add_op8(kMoveReg);
         add_op8(dest);
@@ -1132,7 +1246,7 @@ again:
 
         add_op8(kCall);
         add_op8(dest);
-        add_op8(add_literal(node->nd_mid));
+        add_op8(add_literal(node));
         add_op8(r);
 
         add_op8(kMoveReg);
@@ -1185,7 +1299,7 @@ again:
         case NODE_FCALL:
           tmp = node->nd_args;
 
-          if(nd_type(tmp) == NODE_ARRAY) {
+          if(tmp && nd_type(tmp) == NODE_ARRAY) {
             while(tmp) {
               if(!compile(tmp->nd_head, next_reg())) return false;
               tmp = tmp->nd_next;
@@ -1194,7 +1308,7 @@ again:
             add_op8(r+1);
             add_op8(node->nd_args->nd_alen);
 
-          } else {
+          } else if(tmp) {
             int ar = next_reg();
             if(!compile(tmp, ar)) return false;
 
@@ -1209,7 +1323,7 @@ again:
 
           add_op8(kPrivateCallWithBlock);
           add_op8(dest);
-          add_op8(add_literal(node->nd_mid));
+          add_op8(add_literal(node));
           add_op8(r);
 
           reset_reg(r);
@@ -1220,7 +1334,7 @@ again:
 
           tmp = node->nd_args;
 
-          if(nd_type(tmp) == NODE_ARRAY) {
+          if(tmp && nd_type(tmp) == NODE_ARRAY) {
             while(tmp) {
               if(!compile(tmp->nd_head, next_reg())) return false;
               tmp = tmp->nd_next;
@@ -1229,7 +1343,7 @@ again:
             add_op8(kSetArgs);
             add_op8(r+2);
             add_op8(node->nd_args->nd_alen);
-          } else {
+          } else if(tmp) {
             int ar = next_reg();
             if(!compile(tmp, ar)) return false;
 
@@ -1244,14 +1358,13 @@ again:
 
           add_op8(kCallWithBlock);
           add_op8(dest);
-          add_op8(add_literal(node->nd_mid));
+          add_op8(add_literal(node));
           add_op8(r);
 
           reset_reg(r);
           return true;
         }
 
-bp_unsup:
         printf("unsupported block_pass form: %s, %s\n",
                node_name(node),
                node_name(node->nd_args));
@@ -1279,6 +1392,18 @@ bp_unsup:
       add_op8(add_literal(node->nd_lit));
       break;
 
+    case NODE_RETURN:
+      if(node->nd_stts) {
+        if(!compile(node->nd_stts, dest)) return false;
+      } else {
+        add_op8(kLoadNil);
+        add_op8(dest);
+      }
+
+      add_op8(kJumpReturn);
+      add_op8(dest);
+      break;
+
     case NODE_WHILE:
     case NODE_UNTIL:
     case NODE_BREAK:
@@ -1293,18 +1418,22 @@ bp_unsup:
     case NODE_NOT:
     case NODE_DOT2:
     case NODE_DOT3:
-    case NODE_RETURN:
-    case NODE_VCALL:
-    case NODE_SCOPE:
+
     case NODE_IVAR:
     case NODE_IASGN:
+
+    case NODE_GVAR:
+    case NODE_GASGN:
+
+    case NODE_DVAR:
+    case NODE_DASGN:
+    case NODE_DASGN_CURR:
 
     case NODE_COLON2:
     case NODE_COLON3:
     case NODE_HASH:
     case NODE_ZARRAY:
     case NODE_EVSTR:
-
 
     case NODE_DSTR:
     case NODE_DXSTR:
@@ -1319,23 +1448,7 @@ bp_unsup:
     case NODE_CVDECL:
     case NODE_CVASGN:
 
-    case NODE_GVAR:
-    case NODE_GASGN:
-
-    case NODE_DVAR:
-    case NODE_DASGN:
-    case NODE_DASGN_CURR:
-
-    case NODE_DEFN:
-    case NODE_DEFS:
-    case NODE_UNDEF:
-    case NODE_ALIAS:
-    case NODE_VALIAS:
-    case NODE_CLASS:
-    case NODE_SCLASS:
-    case NODE_MODULE:
     case NODE_DEFINED:
-
     case NODE_OP_ASGN1:
     case NODE_OP_ASGN2:
     case NODE_OP_ASGN_AND:
@@ -1353,13 +1466,35 @@ bp_unsup:
     case NODE_MATCH:
     case NODE_MATCH2:
     case NODE_MATCH3:
+      idx = add_literal((VALUE)node);
+      if(idx < 255) {
+        add_op8(kEvalNode);
+        add_op8(dest);
+        add_op8(idx);
+      } else {
+        add_op8(kEvalNode32);
+        add_op8(dest);
+        add_op32(idx);
+      }
+
+      break;
+
+    case NODE_DEFN:
+    case NODE_DEFS:
+    case NODE_UNDEF:
+    case NODE_ALIAS:
+    case NODE_VALIAS:
+    case NODE_CLASS:
+    case NODE_SCLASS:
+    case NODE_MODULE:
+    case NODE_SCOPE:
 
     case NODE_FLIP2:
     case NODE_FLIP3:
     case NODE_POSTEXE:
     case NODE_OPT_N:
     default:
-      printf("failed on %s\n", node_name(node));
+      // printf("failed on %s\n", node_name(node));
       return false;
     }
 
