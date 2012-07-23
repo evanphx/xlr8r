@@ -799,12 +799,39 @@ int diff = 0x6149;
 
 void init_runtime();
 
+static void* call0 = 0;
+
+VALUE activate(VALUE self) {
+#ifdef DISABLE_XLR8R
+  return Qfalse;
+#else
+  uintptr_t dest = ((uintptr_t)xlr8r_call0) - (((uintptr_t)call0) + 6);
+  uint8_t* buf = (uint8_t*)call0;
+
+  mprotect((void*)(((uintptr_t)buf) & ~0xfff), 4096,
+           PROT_READ | PROT_WRITE | PROT_EXEC);
+
+  buf[0] = 0x66;
+  buf[1] = 0xe9;
+  buf[2] = ((dest >> 0)  & 0xff);
+  buf[3] = ((dest >> 8)  & 0xff);
+  buf[4] = ((dest >> 16) & 0xff);
+  buf[5] = ((dest >> 24) & 0xff);
+
+  mprotect((void*)(((uintptr_t)buf) & ~0xfff), 4096,
+           PROT_READ | PROT_EXEC);
+
+  return Qtrue;
+#endif
+}
+
 #define APPLY_OFFSET(base, offset) (void*)(((uintptr_t)base) - offset)
 
 void Init_xlr8r_ext() {
+#ifndef DISABLE_XLR8R
   void* addr = dlsym(RTLD_DEFAULT, "rb_apply");
 
-  void* call0 = APPLY_OFFSET(addr, OFFSET_CALL0);
+  call0 = APPLY_OFFSET(addr, OFFSET_CALL0);
 
   int_ruby_iter = APPLY_OFFSET(addr, OFFSET_RUBY_ITER);
   int_frame_unique = APPLY_OFFSET(addr, OFFSET_FRAME_UNIQUE);
@@ -828,21 +855,9 @@ void Init_xlr8r_ext() {
   mri_umethod_bind = APPLY_OFFSET(addr, OFFSET_UMETHOD_BIND);
   mri_method_call = APPLY_OFFSET(addr, OFFSET_METHOD_CALL);
 
-  uintptr_t dest = ((uintptr_t)xlr8r_call0) - (((uintptr_t)call0) + 6);
-  uint8_t* buf = (uint8_t*)call0;
-
-  mprotect((void*)(((uintptr_t)buf) & ~0xfff), 4096,
-           PROT_READ | PROT_WRITE | PROT_EXEC);
-
-  buf[0] = 0x66;
-  buf[1] = 0xe9;
-  buf[2] = ((dest >> 0)  & 0xff);
-  buf[3] = ((dest >> 8)  & 0xff);
-  buf[4] = ((dest >> 16) & 0xff);
-  buf[5] = ((dest >> 24) & 0xff);
-
-  mprotect((void*)(((uintptr_t)buf) & ~0xfff), 4096,
-           PROT_READ | PROT_EXEC);
-
   init_runtime();
+#endif
+
+  VALUE mod = rb_define_module("XLR8R");
+  rb_define_singleton_method(mod, "activate", activate, 0);
 }

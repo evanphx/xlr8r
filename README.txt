@@ -1,26 +1,38 @@
 = xlr8r
 
-* FIX (url)
+* http://github.com/evanphx/xlr8r
 
 == DESCRIPTION:
 
-FIX (describe your package)
+Ruby 1.8 is done from the perspective of ruby-core. But there are a lot of
+people and businesses still using it.
+
+So what ruby 1.8 needs is a turbocharger. A new fuel injection system.
+An engine rebuild. And thats what xlr8r is.
+
+xlr8r is a bytecode engine that hot-patches itself into MRI Ruby 1.8 to
+speed up running ruby code.
 
 == FEATURES/PROBLEMS:
 
-* FIX (list of features or problems)
+* Bytecode engine
+* Inline method caches
+* Fixnum shortcut optimizations
+* Installable as a gem into any ruby 1.8 build with debug symbols
+* On any ruby not supported, automatically disables itself
+  * Allows xlr8r to be put into any Gemfile
 
 == SYNOPSIS:
 
-  FIX (code sample of usage)
+  require 'xlr8r'
 
 == REQUIREMENTS:
 
-* FIX (list of requirements)
+* MRI Ruby 1.8 with debug symbols
 
 == INSTALL:
 
-* FIX (sudo gem install, anything else)
+* gem install xlr8r
 
 == DEVELOPERS:
 

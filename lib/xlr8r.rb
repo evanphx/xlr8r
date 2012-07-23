@@ -1,3 +1,7 @@
-class Xl8r
-  VERSION = '1.0.0'
+require 'xlr8r_ext'
+
+class XLR8R
+  VERSION = '0.2.0'
 end
+
+XLR8R.activate
